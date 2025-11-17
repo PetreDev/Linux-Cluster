@@ -24,7 +24,6 @@ fi
 SSH_USER="student"
 KEY_NAME="id_rsa_cluster"
 PRIVATE_KEY="./${KEY_NAME}"
-HOST_KEY_CHECK="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
 echo "=== Cluster Connectivity Demonstration (N=$N) ==="
 
@@ -45,7 +44,7 @@ echo "=== Testing Host to Container Connectivity ==="
 for ((i=1; i<=N; i++)); do
     HOST_PORT=$((i + 2221))
     echo "Testing connection to comp${i} (port ${HOST_PORT})..."
-    if ssh -i "${PRIVATE_KEY}" ${HOST_KEY_CHECK} -p "${HOST_PORT}" "${SSH_USER}@localhost" "echo 'Connection successful: \$(hostname) - \$(hostname -i)'" 2>/dev/null; then
+    if ssh -i "${PRIVATE_KEY}" -p "${HOST_PORT}" "${SSH_USER}@localhost" "echo 'Connection successful: \$(hostname) - \$(hostname -i)'" 2>/dev/null; then
         echo "✓ Host -> comp${i} connection OK"
     else
         echo "✗ Host -> comp${i} connection FAILED"
@@ -69,11 +68,11 @@ for ((source=1; source<=N; source++)); do
     done
 
     if [ -n "$TARGET_HOSTS" ]; then
-        echo "Command: ssh comp${source} parallel-ssh -i -O StrictHostKeyChecking=no -O UserKnownHostsFile=/dev/null $TARGET_HOSTS hostname -i"
+        echo "Command: ssh comp${source} parallel-ssh -i $TARGET_HOSTS hostname -i"
 
         # Execute the nested SSH command
-        ssh -i "${PRIVATE_KEY}" ${HOST_KEY_CHECK} -p "${SOURCE_HOST_PORT}" "${SSH_USER}@localhost" \
-            "parallel-ssh -i -O StrictHostKeyChecking=no -O UserKnownHostsFile=/dev/null $TARGET_HOSTS hostname -i" 2>/dev/null
+        ssh -i "${PRIVATE_KEY}" -p "${SOURCE_HOST_PORT}" "${SSH_USER}@localhost" \
+            "parallel-ssh -i $TARGET_HOSTS hostname -i"
 
         echo ""
     fi

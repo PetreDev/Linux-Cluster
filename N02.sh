@@ -40,7 +40,7 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \\
-    apt-get install -y openssh-server sudo && \\
+    apt-get install -y openssh-server sudo pssh && \\
     mkdir -p /var/run/sshd && \\
     rm -rf /var/lib/apt/lists/*
 
@@ -95,6 +95,7 @@ for ((i=1; i<=N; i++)); do
     # Run container with custom networking
     docker run -d \
         --name "${CONTAINER_NAME}" \
+        --hostname "${CONTAINER_NAME}" \
         --network "${NETWORK_NAME}" \
         --ip "${IP_ADDR}" \
         -p "${HOST_PORT}":22 \
@@ -129,18 +130,72 @@ for ((i=1; i<=N; i++)); do
     docker exec "${CONTAINER_NAME}" chown "${SSH_USER}:${SSH_USER}" /home/"${SSH_USER}"/.ssh/id_rsa
     docker exec "${CONTAINER_NAME}" chmod 600 /home/"${SSH_USER}"/.ssh/id_rsa
 
-    # Install pssh for parallel SSH functionality
-    docker exec "${CONTAINER_NAME}" apt update
-    docker exec "${CONTAINER_NAME}" apt install -y pssh
-
-    # Set hostname
-    docker exec "${CONTAINER_NAME}" hostnamectl set-hostname "${CONTAINER_NAME}"
-
     # Update /etc/hosts for internal networking
     echo -e "${HOSTS_CONTENT}" | docker exec -i "${CONTAINER_NAME}" sh -c 'cat >> /etc/hosts'
 
     echo "${CONTAINER_NAME} setup complete."
 done
+
+echo "=== Step 7: Setup SSH known_hosts for seamless connectivity ==="
+# Create a temporary known_hosts file with all container keys
+KNOWN_HOSTS_FILE="/tmp/cluster_known_hosts"
+rm -f "${KNOWN_HOSTS_FILE}"
+
+# Scan SSH keys for all containers
+for ((i=1; i<=N; i++)); do
+    CONTAINER_NAME="${CONTAINER_NAMES[$i]}"
+    CONTAINER_IP="${CONTAINER_IPS[$i]}"
+
+    echo "Scanning SSH keys for ${CONTAINER_NAME}..."
+
+    # Get SSH host key from container
+    HOST_KEY=$(docker exec "${CONTAINER_NAME}" ssh-keygen -f /etc/ssh/ssh_host_rsa_key -y 2>/dev/null)
+    if [ -n "${HOST_KEY}" ]; then
+        # Add both hostname and IP entries
+        echo "${CONTAINER_NAME} ${HOST_KEY}" >> "${KNOWN_HOSTS_FILE}"
+        echo "${CONTAINER_IP} ${HOST_KEY}" >> "${KNOWN_HOSTS_FILE}"
+
+        # Also add comp1, comp2, etc. hostname format
+        echo "comp${i} ${HOST_KEY}" >> "${KNOWN_HOSTS_FILE}"
+    fi
+done
+
+# Copy known_hosts to all containers
+for ((i=1; i<=N; i++)); do
+    CONTAINER_NAME="${CONTAINER_NAMES[$i]}"
+    echo "Installing known_hosts in ${CONTAINER_NAME}..."
+    docker cp "${KNOWN_HOSTS_FILE}" "${CONTAINER_NAME}":/home/"${SSH_USER}"/.ssh/known_hosts
+    docker exec "${CONTAINER_NAME}" chown "${SSH_USER}:${SSH_USER}" /home/"${SSH_USER}"/.ssh/known_hosts
+done
+
+# Also setup host known_hosts for localhost:port connections
+echo "Setting up host known_hosts for localhost connections..."
+HOST_KNOWN_HOSTS="${HOME}/.ssh/known_hosts"
+mkdir -p "${HOME}/.ssh"
+chmod 700 "${HOME}/.ssh"
+
+# Backup existing known_hosts if it exists
+if [ -f "${HOST_KNOWN_HOSTS}" ]; then
+    cp "${HOST_KNOWN_HOSTS}" "${HOST_KNOWN_HOSTS}.backup.$(date +%s)" 2>/dev/null || true
+fi
+
+# Add container keys to host known_hosts for localhost:port access
+for ((i=1; i<=N; i++)); do
+    CONTAINER_NAME="${CONTAINER_NAMES[$i]}"
+    HOST_PORT="$(($i + 2221))"
+
+    # Get SSH host key from container
+    HOST_KEY=$(docker exec "${CONTAINER_NAME}" ssh-keygen -f /etc/ssh/ssh_host_rsa_key -y 2>/dev/null)
+    if [ -n "${HOST_KEY}" ]; then
+        # Remove any existing entry for this localhost:port first
+        ssh-keygen -f "${HOST_KNOWN_HOSTS}" -R "[localhost]:${HOST_PORT}" >/dev/null 2>&1 || true
+        # Add localhost:port entry to host known_hosts
+        echo "[localhost]:${HOST_PORT} ${HOST_KEY}" >> "${HOST_KNOWN_HOSTS}"
+    fi
+done
+
+# Cleanup
+rm -f "${KNOWN_HOSTS_FILE}"
 
 echo ""
 echo "=== Cluster Setup Complete ==="
